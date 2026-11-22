@@ -1479,8 +1479,21 @@ export class ContentGenerationPipeline {
       // may consume the tiny output budget on reasoning and skip the tool.
       const fcMode = request.config?.toolConfig?.functionCallingConfig?.mode;
       if (fcMode === 'ANY') {
+        // Strict OpenAI-compatible backends (vLLM/SGLang deployments such as
+        // TheHive, TabbyAPI, llama.cpp's server) reject tool_choice:
+        // "required" with a bodyless 400 (QwenLM/qwen-code#14112). The forced
+        // side queries carry exactly one wrapper tool, so the named-function
+        // form forces the same tool call while staying spec-legal on every
+        // backend. Fall back to the previous encoding only when no function
+        // tool can be named.
+        const forcedToolName = baseRequest.tools?.find(
+          (tool): tool is OpenAI.Chat.ChatCompletionFunctionTool =>
+            tool.type === 'function' && Boolean(tool.function.name),
+        )?.function.name;
         (baseRequest as unknown as Record<string, unknown>)['tool_choice'] =
-          'required';
+          forcedToolName
+            ? { type: 'function', function: { name: forcedToolName } }
+            : 'required';
       } else if (fcMode === 'NONE') {
         (baseRequest as unknown as Record<string, unknown>)['tool_choice'] =
           'none';
@@ -1745,9 +1758,17 @@ export class ContentGenerationPipeline {
     // dropping `required` there only degrades their forced-tool side
     // queries. `explicitThinkingMandatory` stays ungated: it is explicit
     // "thinking is on" knowledge, model-agnostic by design.
+    // The forced selection is either the legacy "required" encoding or the
+    // named-function object the pipeline emits above; DashScope rejects both
+    // while thinking is enabled.
+    const forcedToolChoice =
+      typed['tool_choice'] === 'required' ||
+      (typeof typed['tool_choice'] === 'object' &&
+        typed['tool_choice'] !== null &&
+        (typed['tool_choice'] as { type?: unknown }).type === 'function');
     if (
       isDashScope &&
-      typed['tool_choice'] === 'required' &&
+      forcedToolChoice &&
       (explicitThinkingMandatory ||
         (isQwenFamilyWireModel(model) &&
           (typed['enable_thinking'] === true ||
@@ -1756,7 +1777,7 @@ export class ContentGenerationPipeline {
               reasoningEffort !== 'none'))))
     ) {
       debugLogger.debug(
-        'DashScope: dropping tool_choice=required while thinking is enabled',
+        'DashScope: dropping forced tool_choice while thinking is enabled',
         { model, reasoningEffort, thinkingBudget, explicitThinkingMandatory },
       );
       delete typed['tool_choice'];

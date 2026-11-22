@@ -145,6 +145,17 @@ function forcedToolConfig(
   };
 }
 
+/**
+ * The named-function tool_choice the pipeline sends for mode: ANY. The named
+ * form forces the same tool call as "required" but is also accepted by strict
+ * vLLM-class OpenAI-compatible backends that reject "required" with a
+ * bodyless 400 (QwenLM/qwen-code#14112).
+ */
+const FORCED_TOOL_CHOICE = {
+  type: 'function' as const,
+  function: { name: 'respond_in_schema' },
+};
+
 /** A 400 whose message says the model only accepts thinking turned on. */
 const requiredThinkingError = (
   message = 'The value of the enable_thinking parameter is restricted to True.',
@@ -729,7 +740,7 @@ describe('ContentGenerationPipeline', () => {
         reasoning?: ContentGeneratorConfig['reasoning'];
         includeThoughts?: boolean;
         expectedThinking?: boolean;
-        expectedToolChoice?: string;
+        expectedToolChoice?: string | typeof FORCED_TOOL_CHOICE;
         expectedReasoningEffort?: string;
       }>({
         'keep thinking for a thinkingMandatory model on Token Plan side queries':
@@ -748,61 +759,59 @@ describe('ContentGenerationPipeline', () => {
           includeThoughts: false,
           expectedThinking: true,
         },
-        'remove required tool selection when thinking is enabled on the wire': {
+        'drop forced tool selection when thinking is enabled on the wire': {
           model: 'qwen3.7-max',
           extraBody: { enable_thinking: true },
           expectedThinking: true,
         },
-        'remove required tool selection when reasoning effort enables thinking':
-          {
-            model: 'qwen3.8-max',
-            extraBody: { reasoning_effort: 'high' },
-          },
-        'remove required tool selection when thinking budget enables thinking':
-          {
-            model: 'qwen3.8-max',
-            extraBody: { thinking_budget: 4096 },
-          },
-        'remove required tool selection when a string thinking budget enables thinking':
+        'drop forced tool selection when reasoning effort enables thinking': {
+          model: 'qwen3.8-max',
+          extraBody: { reasoning_effort: 'high' },
+        },
+        'drop forced tool selection when thinking budget enables thinking': {
+          model: 'qwen3.8-max',
+          extraBody: { thinking_budget: 4096 },
+        },
+        'drop forced tool selection when a string thinking budget enables thinking':
           {
             model: 'qwen3.8-max',
             extraBody: { thinking_budget: '4096' },
             reasoning: { effort: 'high' },
           },
-        'preserve required tool selection when thinking is explicitly disabled alongside a budget':
+        'preserve forced tool selection when thinking is explicitly disabled alongside a budget':
           {
             model: 'qwen3-max',
             extraBody: { thinking_budget: 4096 },
             includeThoughts: false,
             expectedThinking: false,
-            expectedToolChoice: 'required',
+            expectedToolChoice: FORCED_TOOL_CHOICE,
           },
-        'preserve required tool selection when reasoning effort is none': {
+        'preserve forced tool selection when reasoning effort is none': {
           model: 'qwen3.8-max',
           extraBody: { reasoning_effort: 'none' },
-          expectedToolChoice: 'required',
+          expectedToolChoice: FORCED_TOOL_CHOICE,
         },
-        'preserve required tool selection for a non-qwen model with a user reasoning_effort':
+        'preserve forced tool selection for a non-qwen model with a user reasoning_effort':
           {
             baseUrl: TOKEN_PLAN_URL,
             model: 'glm-5.2',
             extraBody: { reasoning_effort: 'high' },
-            expectedToolChoice: 'required',
+            expectedToolChoice: FORCED_TOOL_CHOICE,
           },
         ...Object.fromEntries(
           ['gpt-5-pro', 'gpt-6-astra'].map((model) => [
-            `preserve required tool selection for name-derived mandatory ${model}`,
+            `preserve forced tool selection for name-derived mandatory ${model}`,
             {
               baseUrl: 'https://idealab.alibaba-inc.com/api/openai/v1',
               model,
               includeThoughts: false,
-              expectedToolChoice: 'required',
+              expectedToolChoice: FORCED_TOOL_CHOICE,
             },
           ]),
         ),
-        'preserve required tool selection when thinking is not enabled': {
+        'preserve forced tool selection when thinking is not enabled': {
           model: 'qwen3.7-max',
-          expectedToolChoice: 'required',
+          expectedToolChoice: FORCED_TOOL_CHOICE,
         },
         'emit the tier-native disable shape under the config-level reasoning opt-out':
           {
@@ -810,7 +819,7 @@ describe('ContentGenerationPipeline', () => {
             extraBody: { reasoning_effort: 'high' },
             reasoning: false,
             expectedReasoningEffort: 'none',
-            expectedToolChoice: 'required',
+            expectedToolChoice: FORCED_TOOL_CHOICE,
           },
         'emit the tier-native disable shape under the per-request thinking opt-out':
           {
@@ -818,7 +827,7 @@ describe('ContentGenerationPipeline', () => {
             extraBody: { reasoning_effort: 'high' },
             includeThoughts: false,
             expectedReasoningEffort: 'none',
-            expectedToolChoice: 'required',
+            expectedToolChoice: FORCED_TOOL_CHOICE,
           },
         'never emit the disable even under the reasoning opt-out': {
           baseUrl: TOKEN_PLAN_URL,
@@ -836,7 +845,7 @@ describe('ContentGenerationPipeline', () => {
             extraBody: { enable_thinking: true },
             includeThoughts: false,
             expectedThinking: false,
-            expectedToolChoice: 'required',
+            expectedToolChoice: FORCED_TOOL_CHOICE,
           },
         'allow automatic tool selection when mandatory thinking stays on': {
           baseUrl: TOKEN_PLAN_URL,
@@ -853,7 +862,7 @@ describe('ContentGenerationPipeline', () => {
           thinkingMandatory: true,
           includeThoughts: false,
           expectedThinking: false,
-          expectedToolChoice: 'required',
+          expectedToolChoice: FORCED_TOOL_CHOICE,
         },
         'drop a contradictory thinking disable for aliased mandatory models': {
           baseUrl: TOKEN_PLAN_URL,
@@ -862,11 +871,11 @@ describe('ContentGenerationPipeline', () => {
           thinkingMandatory: true,
           includeThoughts: false,
         },
-        'preserve required tool selection when a null thinking budget means unset':
+        'preserve forced tool selection when a null thinking budget means unset':
           {
             model: 'qwen3-max',
             extraBody: { thinking_budget: null },
-            expectedToolChoice: 'required',
+            expectedToolChoice: FORCED_TOOL_CHOICE,
           },
         'strip the tier-native disable shape for thinkingMandatory models': {
           baseUrl: TOKEN_PLAN_URL,
@@ -897,7 +906,7 @@ describe('ContentGenerationPipeline', () => {
       );
 
       expect(apiCall.enable_thinking).toBe(testCase.expectedThinking);
-      expect(apiCall.tool_choice).toBe(testCase.expectedToolChoice);
+      expect(apiCall.tool_choice).toEqual(testCase.expectedToolChoice);
       if ('expectedReasoningEffort' in testCase) {
         expect(apiCall.reasoning_effort).toBe(testCase.expectedReasoningEffort);
       }
@@ -908,8 +917,9 @@ describe('ContentGenerationPipeline', () => {
       // the real DashScope provider here: its family-gated drop keeps the glm
       // preset's enable_thinking, and the pipeline's clause is family-gated
       // too — on glm the field is an opaque no-op (GLM reads
-      // thinking.enabled), so tool_choice=required must survive for its
-      // forced-tool side queries.
+      // thinking.enabled), so forced tool selection must survive for its
+      // side queries. It survives as the named-function encoding the
+      // pipeline emits for mode: ANY (see #14112).
       mockForcedTool();
       const apiCall = await executeWith(
         {
@@ -926,8 +936,27 @@ describe('ContentGenerationPipeline', () => {
       expectFields(apiCall, {
         enable_thinking: true,
         reasoning_effort: 'high',
-        tool_choice: 'required',
+        tool_choice: FORCED_TOOL_CHOICE,
       });
+    });
+
+    it('sends the named-function tool_choice for strict backends on side queries', async () => {
+      // vLLM-class OpenAI-compatible deployments (TheHive, TabbyAPI,
+      // llama.cpp's server) answer tool_choice: "required" with a bodyless
+      // 400 (QwenLM/qwen-code#14112). mode: ANY must degrade to the named
+      // function form, which forces the same tool call and is accepted
+      // everywhere.
+      mockForcedTool();
+      const apiCall = await executeWith(
+        {
+          baseUrl: TOKEN_PLAN_URL,
+          model: 'deepseek-ai/deepseek-v4.1-flash',
+        },
+        userRequest('deepseek-ai/deepseek-v4.1-flash', forcedToolConfig(true)),
+        'side-query:strict-backend',
+      );
+
+      expect(apiCall.tool_choice).toEqual(FORCED_TOOL_CHOICE);
     });
 
     it.each([
@@ -1362,7 +1391,7 @@ describe('ContentGenerationPipeline', () => {
       // reads no boolean knob), and the retry trigger must recognise it.
       expect(calls[0][0]).toMatchObject({
         reasoning_effort: 'none',
-        tool_choice: 'required',
+        tool_choice: FORCED_TOOL_CHOICE,
       });
       expect(calls[0][0].enable_thinking).toBeUndefined();
       for (const call of calls.slice(1)) {
